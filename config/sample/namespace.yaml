@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: sample
+  labels:
+    app.kubernetes.io/part-of: eks-lab
+    # Pod Security Admission: everything in here runs non-root, no privilege escalation, default seccomp.
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/warn: restricted

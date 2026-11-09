@@ -1,0 +1,22 @@
+# KEDA TriggerAuthentication: sign SQS calls with the KEDA operator's own IRSA role.
+# API keda.sh/v1alpha1 (chart 2.21.0, templates/crds/crd-triggerauthentications.yaml).
+#
+# podIdentity.provider: aws        -> the current AWS provider (aws-eks is the legacy one)
+# podIdentity.identityOwner: keda  -> use the role on keda/keda-operator (eks-lab-irsa-keda-operator,
+#                                    sqs:GetQueueAttributes). The alternative `workload` would make
+#                                    KEDA assume the *scaled workload's* SA role instead.
+# CRD enum verified: identityOwner in {keda, workload}; provider in {azure-workload, gcp, aws, aws-eks, none}.
+#
+# CONTRACT NOTE (LAYERS.md §C says "identityOwner operator" in the trigger metadata): in KEDA >= 2.13
+# the trigger-metadata key `identityOwner: operator|pod` is DEPRECATED and only honoured by the
+# `aws-eks` provider (keda.sh/docs/2.21/scalers/aws-sqs/). Its equivalent for provider `aws` is this
+# field, with `operator` spelled `keda`. The scaled object therefore does not carry the old key.
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: aws-pod-identity
+  namespace: sample
+spec:
+  podIdentity:
+    provider: aws
+    identityOwner: keda

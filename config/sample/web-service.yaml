@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: web
+  namespace: sample
+  labels:
+    app.kubernetes.io/name: web
+    app.kubernetes.io/part-of: eks-lab
+spec:
+  # ClusterIP is enough: the ALB uses target-type ip and registers the pod IPs directly
+  # (no NodePort hop, no kube-proxy in the path).
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: web
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP

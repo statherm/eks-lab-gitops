@@ -1,0 +1,61 @@
+# ArgoCD child Application: KEDA (event-driven autoscaler). Sync wave 0 — must exist before
+# config/sample/ (wave 1), which contains a ScaledObject + TriggerAuthentication.
+#
+# Chart: kedacore/keda 2.21.0 (appVersion 2.21.0), https://kedacore.github.io/charts
+# (verified 2026-11-08 with `helm search repo kedacore/keda --versions`; latest at that time).
+# Values key path checked against the pulled chart's values.yaml:
+#   serviceAccount.operator.{create,name,annotations}   <- operator SA (keda-operator)
+#   serviceAccount.metricServer.*  serviceAccount.webhooks.*
+# (older charts used a flat `serviceAccount.annotations`; 2.21.0's templates still fall back to
+#  `.Values.serviceAccount.name` but annotations are per-component — use the operator block.)
+#
+# IRSA: the operator SA is annotated with the role from LAYERS.md §20-eks
+#   eks-lab-irsa-keda-operator  ->  keda/keda-operator  (sqs:GetQueueAttributes on the queue)
+# KEDA's SQS scaler then signs its GetQueueAttributes calls with that role
+# (TriggerAuthentication podIdentity.provider=aws, identityOwner=keda — see config/sample/).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: keda
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://kedacore.github.io/charts
+    chart: keda
+    targetRevision: 2.21.0
+    helm:
+      releaseName: keda
+      valuesObject:
+        serviceAccount:
+          operator:
+            create: true
+            name: keda-operator
+            annotations:
+              eks.amazonaws.com/role-arn: arn:aws:iam::859741818496:role/eks-lab-irsa-keda-operator
+        # arm64 nodes only (Graviton t4g). KEDA images are multi-arch; the selector just documents it.
+        nodeSelector:
+          kubernetes.io/arch: arm64
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: keda
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      # The KEDA chart ships its CRDs as templates (templates/crds/*), and the ScaledJob/ScaledObject
+      # CRDs exceed the 262144-byte last-applied-configuration annotation limit under client-side
+      # apply. Server-side apply avoids "metadata.annotations: Too long".
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 3m

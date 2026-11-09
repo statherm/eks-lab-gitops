@@ -1,0 +1,59 @@
+# ArgoCD child Application: the sample workload (gunicorn web + SQS "dial" consumer).
+# Sync wave 1 — after keda + external-secrets (wave 0), whose CRDs this directory uses.
+#
+# Source is a plain directory. ArgoCD's directory source loads ONLY *.yaml / *.yml / *.json
+# (and .jsonnet) — "any other file is skipped before the include/exclude patterns are evaluated"
+# (argo-cd.readthedocs.io/en/stable/user-guide/directory/). So the *.yaml.tpl templates and the
+# README.md in config/sample/ are ignored automatically; only the rendered *.yaml are applied.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: sample
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/statherm/eks-lab-gitops.git
+    targetRevision: main
+    path: config/sample
+    directory:
+      recurse: false
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: sample
+  # KEDA owns the consumer Deployment's replica count (0..10). The manifest deliberately omits
+  # spec.replicas, and this tells ArgoCD to ignore that field so selfHeal never fights KEDA.
+  # RespectIgnoreDifferences=true (below) extends the ignore from the diff stage to the sync stage.
+  # This is the pattern ArgoCD documents for HPA-managed Deployments
+  # (argo-cd.readthedocs.io/en/stable/user-guide/diffing/, "jsonPointers: - /spec/replicas").
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      name: consumer
+      namespace: sample
+      jsonPointers:
+        - /spec/replicas
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      # The ScaledObject / TriggerAuthentication / ClusterSecretStore / ExternalSecret kinds come from
+      # the wave-0 charts. In an app-of-apps, wave ordering only sequences the *Application objects*
+      # (child Application health is not evaluated by default since ArgoCD 1.8), so the first sync of
+      # this app can race the CRD install. Without this option ArgoCD's dry run fails with
+      # "the server could not find the requested resource"; with it the CRs are applied once the CRD
+      # exists, and the retry block below covers the gap.
+      - SkipDryRunOnMissingResource=true
+      - RespectIgnoreDifferences=true
+    retry:
+      limit: 10
+      backoff:
+        duration: 15s
+        factor: 2
+        maxDuration: 3m

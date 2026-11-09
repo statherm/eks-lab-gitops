@@ -1,0 +1,85 @@
+# TEMPLATE — rendered to consumer-deployment.yaml by scripts/render-gitops.sh
+# (__ECR_URL__, __IMAGE_TAG__ as for web; __SQS_URL__ = sqs_queue_url output of 00-account).
+#
+# SQS "dial" consumer. Same image as web, MODE=consumer. One message = one dial = sleep 3 s, then delete.
+#
+# REPLICAS: deliberately NOT set. KEDA (keda-scaledobject.yaml) owns spec.replicas between
+# minReplicaCount 0 and maxReplicaCount 10. The field is omitted rather than set to 0 so that
+# ArgoCD's desired state never asserts a value; apps/sample.yaml additionally lists
+# /spec/replicas under ignoreDifferences (+ RespectIgnoreDifferences=true) so selfHeal cannot fight
+# KEDA. On first creation Kubernetes defaults replicas to 1; KEDA then scales it to 0 within
+# pollingInterval + cooldownPeriod if the queue is empty.
+#
+# Graceful shutdown: the app's SIGTERM handler finishes the in-flight message (<= 3 s), deletes it,
+# and exits 0. The queue's visibility timeout (60 s) covers any message that is NOT finished in time —
+# it simply becomes visible again and another replica picks it up (at-least-once).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: consumer
+  namespace: sample
+  labels:
+    app.kubernetes.io/name: consumer
+    app.kubernetes.io/part-of: eks-lab
+spec:
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: consumer
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: consumer
+        app.kubernetes.io/part-of: eks-lab
+    spec:
+      serviceAccountName: dial-consumer
+      # IRSA needs the projected SA token in the pod.
+      automountServiceAccountToken: true
+      terminationGracePeriodSeconds: 30
+      nodeSelector:
+        kubernetes.io/arch: arm64
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: consumer
+          image: __ECR_URL__:__IMAGE_TAG__
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: MODE
+              value: consumer
+            - name: SQS_QUEUE_URL
+              value: "__SQS_URL__"
+            - name: AWS_REGION
+              value: us-west-2
+            - name: APP_VERSION
+              value: "__IMAGE_TAG__"
+            # Long-poll length; the SIGTERM handler aborts an idle poll immediately, so this does not
+            # eat into the 30 s grace period.
+            - name: SQS_WAIT_SECONDS
+              value: "20"
+            - name: DIAL_SECONDS
+              value: "3"
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 16Mi

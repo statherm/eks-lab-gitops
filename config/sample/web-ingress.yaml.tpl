@@ -1,0 +1,62 @@
+# TEMPLATE — rendered to web-ingress.yaml by scripts/render-gitops.sh
+# (__CERT_ARN__ = certificate_arn output of 05-dns).
+#
+# AWS Load Balancer Controller Ingress -> one internet-facing ALB (IngressGroup "eks-lab").
+# Annotation keys verified against
+# kubernetes-sigs.github.io/aws-load-balancer-controller/latest/guide/ingress/annotations/ (2026-11-08).
+# The ALB's DNS name appears in .status.loadBalancer.ingress[0].hostname after sync;
+# scripts/dns-alb.sh upsert writes the Cloudflare CNAME eks-lab.stather.ing -> that name.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: web
+  namespace: sample
+  labels:
+    app.kubernetes.io/name: web
+    app.kubernetes.io/part-of: eks-lab
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/group.name: eks-lab
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80},{"HTTPS":443}]'
+    alb.ingress.kubernetes.io/ssl-redirect: "443"
+    alb.ingress.kubernetes.io/certificate-arn: __CERT_ARN__
+    # TLS 1.3-capable policy. AWS's current recommendation for new listeners (and the console default)
+    # is the hybrid post-quantum policy ELBSecurityPolicy-TLS13-1-2-Res-PQ-2025-09: TLS 1.3 + TLS 1.2
+    # restricted ciphers (ECDHE AES-GCM only) + X25519MLKEM768 key exchange for PQ-capable clients.
+    # Source: docs.aws.amazon.com/elasticloadbalancing/latest/application/describe-ssl-policies.html
+    # ("AWS recommends implementing the new post-quantum TLS (PQ-TLS) based security policy
+    #  ELBSecurityPolicy-TLS13-1-2-Res-PQ-2025-09"). The controller's own default is the 2016 policy.
+    # Fallback if a legacy client must connect: ELBSecurityPolicy-TLS13-1-2-2021-06.
+    alb.ingress.kubernetes.io/ssl-policy: ELBSecurityPolicy-TLS13-1-2-Res-PQ-2025-09
+    alb.ingress.kubernetes.io/healthcheck-path: /healthz
+    alb.ingress.kubernetes.io/healthcheck-interval-seconds: "15"
+    alb.ingress.kubernetes.io/success-codes: "200"
+    # Match the pod's preStop sleep 5 + gunicorn drain: default deregistration delay is 300 s, which
+    # would keep terminated pod IPs in the target group far longer than the pod lives.
+    alb.ingress.kubernetes.io/target-group-attributes: deregistration_delay.timeout_seconds=30
+    # ---------------------------------------------------------------------------------------------
+    # STRETCH / OPTIONAL: set HSTS at the ALB itself, so even a response the app failed to tag carries
+    # it. The app ALSO sets Strict-Transport-Security on every response (belt and braces).
+    # Annotation: alb.ingress.kubernetes.io/listener-attributes.${Protocol}-${Port}  (type stringMap,
+    #   "specifies Listener Attributes which should be applied to listener") — LB controller docs above.
+    # Attribute key: routing.http.response.strict_transport_security.header_value — "Informs browsers
+    #   that the site should only be accessed using HTTPS ..." — ELBv2 API reference, ListenerAttribute
+    #   (docs.aws.amazon.com/elasticloadbalancing/latest/APIReference/API_ListenerAttribute.html).
+    # Only meaningful on the HTTPS listener (HSTS over plain HTTP is ignored by browsers, and port 80
+    # is a redirect anyway). Remove the line to drop the stretch item without touching anything else.
+    alb.ingress.kubernetes.io/listener-attributes.HTTPS-443: routing.http.response.strict_transport_security.header_value=max-age=31536000; includeSubDomains
+    # ---------------------------------------------------------------------------------------------
+spec:
+  ingressClassName: alb
+  rules:
+    - host: eks-lab.stather.ing
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: web
+                port:
+                  name: http
